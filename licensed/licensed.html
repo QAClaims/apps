@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Licensed? — claim check</title>
+<style>
+  :root {
+    --ink: #1c1c1c; --muted: #5d5d5d; --line: #c9c9c9; --field: #ffffff; --page: #f5f5f3;
+    --red: #b3261e; --red-ink: #ffffff; --green: #1e7a3c; --green-ink: #ffffff;
+    --amber: #8a5a00; --amber-bg: #fff4d6;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--page); color: var(--ink);
+    font: 17px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 34rem; margin: 0 auto; padding: 1.25rem 1rem 3rem; }
+  h1 { font-size: 1.35rem; font-weight: 600; margin: 0 0 .25rem; }
+  p.lead { margin: 0 0 1.25rem; color: var(--muted); }
+  label { display: block; margin: 1rem 0 .3rem; font-weight: 600; }
+  label small { display: block; font-weight: 400; color: var(--muted); }
+  input { width: 100%; font: inherit; padding: .65rem .7rem; border: 1px solid var(--line);
+    border-radius: 6px; background: var(--field); color: var(--ink); }
+  input:focus { outline: 3px solid #2b5fb4; outline-offset: 1px; }
+  button { margin-top: 1.25rem; width: 100%; font: inherit; font-weight: 600; padding: .8rem;
+    border: 0; border-radius: 6px; background: var(--ink); color: #fff; cursor: pointer; }
+  button:disabled { opacity: .55; cursor: default; }
+  button:focus-visible { outline: 3px solid #2b5fb4; outline-offset: 2px; }
+  #verdict { margin-top: 1.5rem; border-radius: 8px; padding: 1.1rem 1.15rem; display: none; }
+  #verdict.red { display: block; background: var(--red); color: var(--red-ink); }
+  #verdict.green { display: block; background: var(--green); color: var(--green-ink); }
+  #verdict.amber { display: block; background: var(--amber-bg); color: var(--amber);
+    border: 1px solid var(--amber); }
+  #verdict h2 { margin: 0 0 .6rem; font-size: 1.4rem; line-height: 1.2; }
+  #verdict ul { margin: 0; padding-left: 1.2rem; }
+  #verdict li { margin: .25rem 0; }
+  #verdict li.bad { font-weight: 700; }
+  #status { margin-top: .75rem; min-height: 1.4rem; color: var(--muted); }
+  footer { margin-top: 2.5rem; color: var(--muted); font-size: .85rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Licensed?</h1>
+  <p class="lead">Checks a claim's policy state, vehicle state, and shop state against your license list. Nothing you type in the three claim fields leaves this page.</p>
+
+  <label for="alias">Your alias<small>4–6 characters</small></label>
+  <input id="alias" autocomplete="username" autocapitalize="characters" spellcheck="false" maxlength="6">
+
+  <label for="claim">Claim number<small>the first two characters set the policy state</small></label>
+  <input id="claim" autocomplete="off" spellcheck="false" inputmode="text">
+
+  <label for="vehicle">Vehicle location<small>a state, or an address ending in state and ZIP</small></label>
+  <input id="vehicle" autocomplete="off" spellcheck="false">
+
+  <label for="shop">Shop location<small>same as above</small></label>
+  <input id="shop" autocomplete="off" spellcheck="false">
+
+  <button id="check" type="button">Check licenses</button>
+  <div id="status" role="status" aria-live="polite"></div>
+
+  <section id="verdict" aria-live="assertive"></section>
+
+  <footer>licensed.html v0.1.0 · prototype 1 · QAClaims apps</footer>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  // ---- configuration -------------------------------------------------------
+  // The publishable key is designed to ship in the page; row-level security is
+  // the gate. Prototype 1 has one anon read policy on state_prefixes.
+  var SB_URL = "https://fiplphpjzhbjvdazwsqf.supabase.co";
+  var SB_KEY = "sb_publishable_5eipHD0mJEzc6BSiGX6LLg_aV-MYZyv";
+  var TABLE = "state_prefixes";
+
+  var STATES = ("AL AK AZ AR CA CO CT DE DC FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV " +
+                "NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY").split(" ");
+
+  // ---- pure logic (no DOM, no network) ------------------------------------
+  // Last token that is a valid two-letter state code. Tolerates a bare state,
+  // "City, ST 12345", "City, ST 12345-6789", full address lines, trailing
+  // punctuation, and any case.
+  function stateFromLocation(text) {
+    var tokens = String(text || "").toUpperCase().replace(/[^A-Z0-9\s]/g, " ").trim().split(/\s+/);
+    for (var i = tokens.length - 1; i >= 0; i--) {
+      if (STATES.indexOf(tokens[i]) !== -1) return tokens[i];
+    }
+    return null;
+  }
+
+  // First two characters of the claim number, whatever follows them.
+  function prefixFromClaim(text) {
+    var s = String(text || "").trim();
+    return s.length >= 2 ? s.slice(0, 2) : null;
+  }
+
+  // rows: [{state, prefix, licensed}] for one alias. Returns the verdict.
+  function evaluate(rows, claim, vehicle, shop) {
+    var byPrefix = {}, byState = {};
+    rows.forEach(function (r) {
+      byPrefix[r.prefix] = r;
+      // A state with several prefixes shares one licensed value; keep the first.
+      if (!byState[r.state]) byState[r.state] = r;
+    });
+
+    var checks = [];
+
+    var prefix = prefixFromClaim(claim);
+    var prow = prefix ? byPrefix[prefix] : null;
+    checks.push({
+      field: "Policy state (claim prefix " + (prefix || "?") + ")",
+      state: prow ? prow.state : null,
+      licensed: prow ? prow.licensed : null,
+      problem: !prefix ? "claim number too short" : (!prow ? "prefix " + prefix + " is not in your table" : null)
+    });
+
+    [["Vehicle state", vehicle], ["Shop state", shop]].forEach(function (pair) {
+      var st = stateFromLocation(pair[1]);
+      var row = st ? byState[st] : null;
+      checks.push({
+        field: pair[0],
+        state: st,
+        licensed: row ? row.licensed : null,
+        problem: !st ? "no state found in \"" + String(pair[1] || "").trim() + "\"" : (!row ? st + " is not in your table" : null)
+      });
+    });
+
+    var unresolved = checks.filter(function (c) { return c.problem; });
+    var blocked = checks.filter(function (c) { return c.licensed === "NO"; });
+
+    return {
+      outcome: blocked.length ? "red" : (unresolved.length ? "amber" : "green"),
+      checks: checks, blocked: blocked, unresolved: unresolved
+    };
+  }
+
+  // Exposed for headless tests; harmless in the browser.
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = { stateFromLocation: stateFromLocation, prefixFromClaim: prefixFromClaim, evaluate: evaluate };
+    return;
+  }
+
+  // ---- page --------------------------------------------------------------
+  var $ = function (id) { return document.getElementById(id); };
+  var client = window.supabase.createClient(SB_URL, SB_KEY);
+  var cache = { alias: null, rows: null };
+
+  function say(msg) { $("status").textContent = msg || ""; }
+
+  function render(alias, v) {
+    var box = $("verdict");
+    box.className = v.outcome;
+    var title;
+    if (v.outcome === "green") title = "Licenses confirmed — adjuster " + alias + " can handle this claim.";
+    else if (v.outcome === "red") title = "Adjuster " + alias + " is not licensed to handle this claim.";
+    else title = "Could not confirm — a field did not resolve to a state.";
+
+    var items = v.checks.map(function (c) {
+      var text;
+      if (c.problem) text = c.field + ": " + c.problem;
+      else if (c.licensed === "NO") text = c.field + ": " + c.state + " — NOT licensed";
+      else if (c.licensed === "N/A") text = c.field + ": " + c.state + " — no license required";
+      else text = c.field + ": " + c.state + " — licensed";
+      var cls = (c.problem || c.licensed === "NO") ? ' class="bad"' : "";
+      return "<li" + cls + ">" + escapeHtml(text) + "</li>";
+    }).join("");
+
+    box.innerHTML = "<h2>" + escapeHtml(title) + "</h2><ul>" + items + "</ul>";
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (ch) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch];
+    });
+  }
+
+  // Loads the alias's rows once; later checks are local until the alias changes.
+  // The only thing ever sent is the alias.
+  async function rowsFor(alias) {
+    if (cache.alias === alias && cache.rows) return cache.rows;
+    say("Loading license table for " + alias + "…");
+    var res = await client.from(TABLE).select("state,prefix,licensed").eq("alias", alias);
+    if (res.error) throw new Error("Could not read the license table: " + res.error.message);
+    if (!res.data || res.data.length === 0) throw new Error("No license table for alias \"" + alias + "\". Check the spelling, or ask for your alias to be added.");
+    cache = { alias: alias, rows: res.data.map(function (r) {
+      return { state: String(r.state).trim(), prefix: String(r.prefix).trim(), licensed: String(r.licensed).trim() };
+    }) };
+    return cache.rows;
+  }
+
+  $("check").addEventListener("click", async function () {
+    var alias = $("alias").value.trim().toUpperCase();
+    var box = $("verdict");
+    box.className = ""; box.innerHTML = "";
+    if (alias.length < 4 || alias.length > 6) { say("Enter your alias — 4 to 6 characters."); $("alias").focus(); return; }
+    $("check").disabled = true;
+    try {
+      var rows = await rowsFor(alias);
+      say("");
+      render(alias, evaluate(rows, $("claim").value, $("vehicle").value, $("shop").value));
+    } catch (e) {
+      say(e.message);
+    } finally {
+      $("check").disabled = false;
+    }
+  });
+
+  ["alias", "claim", "vehicle", "shop"].forEach(function (id) {
+    $(id).addEventListener("keydown", function (e) { if (e.key === "Enter") $("check").click(); });
+  });
+})();
+</script>
+</body>
+</html>
