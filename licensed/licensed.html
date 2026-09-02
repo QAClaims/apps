@@ -37,6 +37,8 @@
   #verdict ul { margin: 0; padding-left: 1.2rem; font-size: 1.05rem; }
   #verdict li { margin: .3rem 0; }
   #verdict li.bad { font-weight: 700; }
+  #verdict li.warn { background: var(--amber-bg); color: var(--amber); border: 2px solid var(--amber);
+    border-radius: 6px; padding: .35rem .6rem; margin-left: -1.2rem; list-style: none; font-weight: 600; }
   #verdict p.hint { margin: 1rem 0 0; font-size: .9rem; opacity: .85; }
   #status { margin-top: .75rem; min-height: 1.4rem; color: var(--muted); }
   footer { margin-top: 2.5rem; color: var(--muted); font-size: .85rem; }
@@ -56,7 +58,7 @@
   <label for="vehicle">Vehicle location<small>a state, or an address ending in state and ZIP</small></label>
   <input id="vehicle" autocomplete="off" spellcheck="false">
 
-  <label for="shop">Shop location<small>same as above</small></label>
+  <label for="shop">Shop location<small>optional — leave blank if there is no shop yet</small></label>
   <input id="shop" autocomplete="off" spellcheck="false">
 
   <button id="check" type="button">Check licenses</button>
@@ -66,7 +68,7 @@
     <section id="verdict" role="dialog" tabindex="-1" aria-modal="true" aria-live="assertive"></section>
   </div>
 
-  <footer>licensed.html v0.1.1 · prototype 1 · QAClaims apps</footer>
+  <footer>licensed.html v0.1.2 · prototype 1 · QAClaims apps</footer>
 </main>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
@@ -123,13 +125,20 @@
     });
 
     [["Vehicle state", vehicle], ["Shop state", shop]].forEach(function (pair) {
-      var st = stateFromLocation(pair[1]);
+      var raw = String(pair[1] || "").trim();
+      // Shop location is optional: blank means "not checked", shown as a warning
+      // line inside whatever the other fields decide, never as a failure.
+      if (pair[0] === "Shop state" && raw === "") {
+        checks.push({ field: pair[0], state: null, licensed: null, problem: null, skipped: true });
+        return;
+      }
+      var st = stateFromLocation(raw);
       var row = st ? byState[st] : null;
       checks.push({
         field: pair[0],
         state: st,
         licensed: row ? row.licensed : null,
-        problem: !st ? "no state found in \"" + String(pair[1] || "").trim() + "\"" : (!row ? st + " is not in your table" : null)
+        problem: !st ? "no state found in \"" + raw + "\"" : (!row ? st + " is not in your table" : null)
       });
     });
 
@@ -165,6 +174,7 @@
 
     var items = v.checks.map(function (c) {
       var text;
+      if (c.skipped) return "<li class=\"warn\">" + escapeHtml(c.field + ": not entered — not checked") + "</li>";
       if (c.problem) text = c.field + ": " + c.problem;
       else if (c.licensed === "NO") text = c.field + ": " + c.state + " — NOT licensed";
       else if (c.licensed === "N/A") text = c.field + ": " + c.state + " — no license required";
@@ -231,8 +241,14 @@
     }
   });
 
-  ["alias", "claim", "vehicle", "shop"].forEach(function (id) {
-    $(id).addEventListener("keydown", function (e) { if (e.key === "Enter") $("check").click(); });
+  // Enter moves to the next field; Enter in the last field runs the check.
+  var order = ["alias", "claim", "vehicle", "shop"];
+  order.forEach(function (id, i) {
+    $(id).addEventListener("keydown", function (e) {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      if (i < order.length - 1) $(order[i + 1]).focus(); else $("check").click();
+    });
   });
 })();
 </script>
