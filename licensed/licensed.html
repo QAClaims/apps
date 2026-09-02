@@ -26,15 +26,18 @@
     border: 0; border-radius: 6px; background: var(--ink); color: #fff; cursor: pointer; }
   button:disabled { opacity: .55; cursor: default; }
   button:focus-visible { outline: 3px solid #2b5fb4; outline-offset: 2px; }
-  #verdict { margin-top: 1.5rem; border-radius: 8px; padding: 1.1rem 1.15rem; display: none; }
-  #verdict.red { display: block; background: var(--red); color: var(--red-ink); }
-  #verdict.green { display: block; background: var(--green); color: var(--green-ink); }
-  #verdict.amber { display: block; background: var(--amber-bg); color: var(--amber);
-    border: 1px solid var(--amber); }
-  #verdict h2 { margin: 0 0 .6rem; font-size: 1.4rem; line-height: 1.2; }
-  #verdict ul { margin: 0; padding-left: 1.2rem; }
-  #verdict li { margin: .25rem 0; }
+  #scrim { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none;
+    align-items: center; justify-content: center; padding: 1rem; cursor: pointer; z-index: 10; }
+  #scrim.open { display: flex; }
+  #verdict { width: 100%; max-width: 34rem; border-radius: 10px; padding: 1.4rem 1.5rem; }
+  #verdict.red { background: var(--red); color: var(--red-ink); }
+  #verdict.green { background: var(--green); color: var(--green-ink); }
+  #verdict.amber { background: var(--amber-bg); color: var(--amber); border: 2px solid var(--amber); }
+  #verdict h2 { margin: 0 0 .7rem; font-size: 1.6rem; line-height: 1.2; }
+  #verdict ul { margin: 0; padding-left: 1.2rem; font-size: 1.05rem; }
+  #verdict li { margin: .3rem 0; }
   #verdict li.bad { font-weight: 700; }
+  #verdict p.hint { margin: 1rem 0 0; font-size: .9rem; opacity: .85; }
   #status { margin-top: .75rem; min-height: 1.4rem; color: var(--muted); }
   footer { margin-top: 2.5rem; color: var(--muted); font-size: .85rem; }
 </style>
@@ -59,9 +62,11 @@
   <button id="check" type="button">Check licenses</button>
   <div id="status" role="status" aria-live="polite"></div>
 
-  <section id="verdict" aria-live="assertive"></section>
+  <div id="scrim" aria-hidden="true">
+    <section id="verdict" role="dialog" tabindex="-1" aria-modal="true" aria-live="assertive"></section>
+  </div>
 
-  <footer>licensed.html v0.1.0 · prototype 1 · QAClaims apps</footer>
+  <footer>licensed.html v0.1.1 · prototype 1 · QAClaims apps</footer>
 </main>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
@@ -168,8 +173,28 @@
       return "<li" + cls + ">" + escapeHtml(text) + "</li>";
     }).join("");
 
-    box.innerHTML = "<h2>" + escapeHtml(title) + "</h2><ul>" + items + "</ul>";
+    box.innerHTML = "<h2>" + escapeHtml(title) + "</h2><ul>" + items + "</ul>" +
+      "<p class=\"hint\">Tap or press any key to go back.</p>";
+    $("scrim").className = "open";
+    $("scrim").setAttribute("aria-hidden", "false");
+    box.focus();
   }
+
+  // Any click or key clears the result and returns to entry: alias stays,
+  // the three claim fields clear, focus lands on the claim number.
+  function dismiss() {
+    var scrim = $("scrim");
+    if (scrim.className !== "open") return;
+    scrim.className = "";
+    scrim.setAttribute("aria-hidden", "true");
+    $("verdict").className = ""; $("verdict").innerHTML = "";
+    ["claim", "vehicle", "shop"].forEach(function (id) { $(id).value = ""; });
+    $("claim").focus();
+  }
+  $("scrim").addEventListener("click", dismiss);
+  document.addEventListener("keydown", function (e) {
+    if ($("scrim").className === "open") { e.preventDefault(); dismiss(); }
+  });
 
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, function (ch) {
@@ -193,8 +218,6 @@
 
   $("check").addEventListener("click", async function () {
     var alias = $("alias").value.trim().toUpperCase();
-    var box = $("verdict");
-    box.className = ""; box.innerHTML = "";
     if (alias.length < 4 || alias.length > 6) { say("Enter your alias — 4 to 6 characters."); $("alias").focus(); return; }
     $("check").disabled = true;
     try {
